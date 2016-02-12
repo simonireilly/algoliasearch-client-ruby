@@ -333,14 +333,15 @@ module Algolia
       end
       receive_timeout = type == :search ? @search_timeout : @receive_timeout
 
-      (type == :write ? @hosts : @search_hosts).size.times do |i|
+      hosts = (type == :write ? @hosts : @search_hosts)
+      connections = thread_local_connections(type, hosts)
+      hosts.size.times do |i|
         connect_timeout += 2 if i == 2
         send_timeout += 10 if i == 2
         receive_timeout += 10 if i == 2
 
-        host = thread_local_hosts(type != :write, connect_timeout, send_timeout, receive_timeout)[i]
         begin
-          return perform_request(host[:session], host[:base_url] + uri, method, data)
+          return perform_request(connections[i], uri, method, data, connect_timeout, send_timeout, receive_timeout)
         rescue AlgoliaProtocolError => e
           raise if e.code / 100 == 4
           exceptions << e
@@ -352,63 +353,52 @@ module Algolia
     end
 
     def get(uri, type = :write)
-      request(uri, :GET, nil, type)
+      request(uri, :get, nil, type)
     end
 
-    def post(uri, body = {}, type = :write)
-      request(uri, :POST, body, type)
+    def post(uri, body = nil, type = :write)
+      request(uri, :post, body, type)
     end
 
-    def put(uri, body = {}, type = :write)
-      request(uri, :PUT, body, type)
+    def put(uri, body = nil, type = :write)
+      request(uri, :put, body, type)
     end
 
     def delete(uri, type = :write)
-      request(uri, :DELETE, nil, type)
+      request(uri, :delete, nil, type)
     end
 
     private
 
-    # This method returns a thread-local array of sessions
+    # This method returns a thread-local array of HTTP connections
     #
-    # Since the underlying httpclient library resets the connections pool
-    # if you change any of its attributes, we cannot change the timeout
-    # of an HTTP session dynamically. That being said, having 1 pool per
-    # timeout appears to be the only acceptable solution
-    def thread_local_hosts(read, connect_timeout, send_timeout, receive_timeout)
-      thread_local_var = read ? :algolia_search_hosts : :algolia_hosts
+    def thread_local_connections(type, hosts)
+      thread_local_var = type == :write ? :algolia_hosts : :algolia_search_hosts
       Thread.current[thread_local_var] ||= {}
-      Thread.current[thread_local_var]["#{self.hash}:#{connect_timeout}-#{send_timeout}-#{receive_timeout}"] ||= (read ? search_hosts : hosts).map do |host|
-        client = HTTPClient.new
-        client.ssl_config.ssl_version = @ssl_version if @ssl && @ssl_version
-        hinfo = {
-          :base_url => "http#{@ssl ? 's' : ''}://#{host}",
-          :session => client
-        }
-        hinfo[:session].transparent_gzip_decompression = true
-        hinfo[:session].connect_timeout = connect_timeout
-        hinfo[:session].send_timeout = send_timeout
-        hinfo[:session].receive_timeout = receive_timeout
-        hinfo[:session].ssl_config.add_trust_ca File.join(File.dirname(__FILE__), '..', '..', 'resources', 'ca-bundle.crt')
-        hinfo
+      Thread.current[thread_local_var]["#{self.hash}"] ||= hosts.map do |host|
+        options = {}
+        if @ssl
+          options[:ssl] = {
+            :ca_file => File.join(File.dirname(__FILE__), '..', '..', 'resources', 'ca-bundle.crt')
+          }
+          options[:ssl][:version] = @ssl_version if @ssl_version
+        end
+        Faraday.new("http#{'s' if @ssl}://#{host}", options) do |conn|
+          conn.adapter :net_http_persistent # keep-alive
+          conn.use :gzip # enable gzip
+        end
       end
     end
 
-    def perform_request(session, url, method, data)
-      response = case method
-      when :GET
-        session.get(url, { :header => @headers })
-      when :POST
-        session.post(url, { :body => data, :header => @headers })
-      when :PUT
-        session.put(url, { :body => data, :header => @headers })
-      when :DELETE
-        session.delete(url, { :header => @headers })
+    def perform_request(conn, url, method, data, connect_timeout, send_timeout, receive_timeout)
+      response = conn.run_request(method, url, data, headers) do |req|
+        req.options.timeout = receive_timeout
+        req.options.open_timeout = [send_timeout, connect_timeout].max
       end
-      if response.code / 100 != 2
-        raise AlgoliaProtocolError.new(response.code, "Cannot #{method} to #{url}: #{response.content} (#{response.code})")
+      if response.status / 100 != 2
+        raise AlgoliaProtocolError.new(response.status, "Cannot #{method} to #{url}: #{response.body} (#{response.status})")
       end
-      return JSON.parse(response.content)
+      return JSON.parse(response.body)
     end
 
   end
@@ -655,7 +645,7 @@ module Algolia
     Algolia.client.batch!(requests)
   end
 
-  # Used mostly for testing. Lets you delete the api key global vars.
+  # Used mostly for testing. Lets you delete the pool of thread-local connections
   def Algolia.destroy
     @@client = Thread.current[:algolia_hosts] = Thread.current[:algolia_search_hosts] = nil
     self

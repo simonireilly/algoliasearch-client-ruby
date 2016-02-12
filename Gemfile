@@ -1,6 +1,8 @@
 source 'http://rubygems.org'
 
-gem 'httpclient', '~> 2.7.1'
+gem 'faraday', '~> 0.9.2'
+gem 'faraday_middleware', '~> 0.10.0'
+gem 'net-http-persistent', '~> 2.9.4'
 gem 'json', '>= 1.5.1'
 gem 'rubysl', '~> 2.0', :platform => :rbx
 

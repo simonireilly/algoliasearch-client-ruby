@@ -8,7 +8,9 @@ require "rubygems"
 require "bundler/setup"
 
 require 'json'
-require 'httpclient'
+require 'faraday'
+require 'faraday_middleware'
+require 'net/http/persistent'
 require 'date'
 require 'cgi'
 
