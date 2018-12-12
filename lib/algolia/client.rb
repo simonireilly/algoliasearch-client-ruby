@@ -11,7 +11,7 @@ module Algolia
 
   #
   # A class which encapsulates the HTTPS communication with the Algolia
-  # API server. Uses the HTTPClient library for low-level HTTP communication.
+  # API server. Uses the Typhoeus library for low-level HTTP communication.
   #
   class Client
     attr_reader :ssl, :ssl_version, :hosts, :search_hosts, :application_id, :api_key, :headers, :connect_timeout, :send_timeout, :receive_timeout, :search_timeout, :batch_timeout
@@ -559,9 +559,6 @@ module Algolia
         Thread.current[thread_index_key] = host[:index]
         host[:last_call] = Time.now.to_i
 
-        host[:session].connect_timeout = connect_timeout
-        host[:session].send_timeout = send_timeout
-        host[:session].receive_timeout = receive_timeout
         begin
           return perform_request(host[:session], host[:base_url] + uri, method, data, request_options)
         rescue AlgoliaProtocolError => e
@@ -570,7 +567,6 @@ module Algolia
         rescue => e
           exceptions << e
         end
-        host[:session].reset_all
       end
       raise AlgoliaProtocolError.new(0, "Cannot reach any host: #{exceptions.map { |e| e.to_s }.join(', ')}")
     end
@@ -599,10 +595,7 @@ module Algolia
     def thread_local_hosts(read)
       thread_hosts_key = read ? "algolia_search_hosts_#{application_id}" : "algolia_hosts_#{application_id}"
       Thread.current[thread_hosts_key] ||= (read ? search_hosts : hosts).each_with_index.map do |host, i|
-        client = HTTPClient.new
-        client.ssl_config.ssl_version = @ssl_version if @ssl && @ssl_version
-        client.transparent_gzip_decompression = @gzip
-        client.ssl_config.add_trust_ca File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'resources', 'ca-bundle.crt'))
+        client = Typhoeus
         {
           :index => i,
           :base_url => "http#{@ssl ? 's' : ''}://#{host}",
@@ -632,18 +625,18 @@ module Algolia
       extra_headers.each { |key, val| hs[key.to_s] = val }
       response = case method
       when :GET
-        session.get(url, { :header => hs })
+        session.get(url, { :headers => hs, timeout: @connect_timeout })
       when :POST
-        session.post(url, { :body => data, :header => hs })
+        session.post(url, { :body => data, :headers => hs, :timeout => @connect_timeout })
       when :PUT
-        session.put(url, { :body => data, :header => hs })
+        session.put(url, { :body => data, :headers => hs, :timeout => @connect_timeout })
       when :DELETE
-        session.delete(url, { :header => hs })
+        session.delete(url, { :headers => hs, :timeout => @connect_timeout })
       end
       if response.code / 100 != 2
-        raise AlgoliaProtocolError.new(response.code, "Cannot #{method} to #{url}: #{response.content} (#{response.code})")
+        raise AlgoliaProtocolError.new(response.code, "Cannot #{method} to #{url}: #{response.body} (#{response.code})")
       end
-      return JSON.parse(response.content)
+      return JSON.parse(response.body)
     end
 
     def add_header_to_request_options(request_options, headers_to_add)

@@ -47,7 +47,7 @@ module Algolia
     private
 
     def perform_request(method, url, params = {}, data = {})
-      http = HTTPClient.new
+      http = Typhoeus
 
       url = API_URL + url
 
@@ -56,18 +56,18 @@ module Algolia
 
       response = case method
                  when :GET
-                   http.get(url, { :header => @headers })
+                   http.get(url, { :headers => @headers })
                  when :POST
-                   http.post(url, { :body => data, :header => @headers })
+                   http.post(url, { :body => data, :headers => @headers })
                  when :DELETE
-                   http.delete(url, { :header => @headers })
+                   http.delete(url, { :headers => @headers })
                  end
 
       if response.code / 100 != 2
-        raise AlgoliaProtocolError.new(response.code, "Cannot #{method} to #{url}: #{response.content}")
+        raise AlgoliaProtocolError.new(response.code, "Cannot #{method} to #{url}: #{response.body}")
       end
 
-      JSON.parse(response.content)
+      JSON.parse(response.body)
     end
 
   end
